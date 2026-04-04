@@ -2,7 +2,7 @@
 use arrow::array::{
     Array, BinaryViewArray, BooleanArray, FixedSizeBinaryArray, MutableBinaryViewArray,
     MutableBooleanArray, MutableFixedSizeBinaryArray, MutablePrimitiveArray, NullArray,
-    PrimitiveArray, Utf8ViewArray,
+    PrimitiveArray, Utf8ViewArray, new_empty_array,
 };
 use arrow::datatypes::{ArrowDataType, Field, IntegerType, IntervalUnit, TimeUnit};
 use arrow::types::{days_ms, i256};
@@ -531,7 +531,13 @@ pub fn deserialize_all(
                     )
                 },
 
-                other => todo!("{:?}", other),
+                (dtype, _) => {
+                    // @TODO: These are all a bit more complex, skip for now.
+                    (
+                        new_empty_array(dtype.clone()),
+                        new_empty_array(dtype.clone()),
+                    )
+                },
             };
 
             Ok(Some(ArrowColumnStatisticsArrays {
