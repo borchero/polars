@@ -133,21 +133,32 @@ fn build_column_stats(
             Some(stats) => {
                 let null_count: IdxSize = stats.null_count.non_null_values_iter().sum();
 
-                let dtype = DataType::from_arrow_dtype(field.dtype());
                 let min_value = stats
                     .min_value
                     .and_then(|min| {
-                        Series::from_chunk_and_dtype(PlSmallStr::EMPTY, min, &dtype)
-                            .map(|s| s.min_reduce().ok().map(|s| s.value().clone()))
-                            .transpose()
+                        unsafe {
+                            Series::_try_from_arrow_unchecked(
+                                PlSmallStr::EMPTY,
+                                vec![min],
+                                field.dtype(),
+                            )
+                        }
+                        .map(|s| s.min_reduce().ok().map(|s| s.value().clone()))
+                        .transpose()
                     })
                     .transpose()?;
                 let max_value = stats
                     .max_value
                     .and_then(|max| {
-                        Series::from_chunk_and_dtype(PlSmallStr::EMPTY, max, &dtype)
-                            .map(|s| s.min_reduce().ok().map(|s| s.value().clone()))
-                            .transpose()
+                        unsafe {
+                            Series::_try_from_arrow_unchecked(
+                                PlSmallStr::EMPTY,
+                                vec![max],
+                                field.dtype(),
+                            )
+                        }
+                        .map(|s| s.max_reduce().ok().map(|s| s.value().clone()))
+                        .transpose()
                     })
                     .transpose()?;
 
@@ -174,8 +185,17 @@ fn build_column_stats(
 fn collect_leaf_fields(field: Field, out: &mut Vec<Field>) {
     match field.dtype {
         ArrowDataType::Struct(children) => {
-            for child in children {
-                collect_leaf_fields(child, out);
+            if children.is_empty() {
+                // NOTE: An empty struct is represented as boolean column in parquet
+                out.push(Field::new(
+                    field.name,
+                    ArrowDataType::Boolean,
+                    field.is_nullable,
+                ))
+            } else {
+                for child in children {
+                    collect_leaf_fields(child, out);
+                }
             }
         },
         ArrowDataType::List(inner)
