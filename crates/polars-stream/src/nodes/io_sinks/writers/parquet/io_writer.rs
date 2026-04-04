@@ -99,10 +99,10 @@ fn build_file_stats(
     // columns) use the same DFS order over struct children.
     let mut leaf_fields = Vec::with_capacity(num_columns);
     for field in arrow_schema.iter_values() {
-        collect_leaf_fields(field, &mut leaf_fields);
+        collect_leaf_fields(field.clone(), &mut leaf_fields);
     }
     let column_stats = (0..num_columns)
-        .map(|col_idx| build_column_stats(&file_metadata, leaf_fields[col_idx], col_idx))
+        .map(|col_idx| build_column_stats(&file_metadata, &leaf_fields[col_idx], col_idx))
         .collect::<PolarsResult<Vec<_>>>()?;
 
     let stats = SinkedFileStats {
@@ -134,13 +134,22 @@ fn build_column_stats(
                 let null_count: IdxSize = stats.null_count.non_null_values_iter().sum();
 
                 let dtype = DataType::from_arrow_dtype(field.dtype());
-                let min_series =
-                    Series::from_chunk_and_dtype(PlSmallStr::EMPTY, stats.min_value, &dtype)?;
-                let min_value = min_series.min_reduce().ok().map(|s| s.value().clone());
-
-                let max_series =
-                    Series::from_chunk_and_dtype(PlSmallStr::EMPTY, stats.max_value, &dtype)?;
-                let max_value = max_series.max_reduce().ok().map(|s| s.value().clone());
+                let min_value = stats
+                    .min_value
+                    .and_then(|min| {
+                        Series::from_chunk_and_dtype(PlSmallStr::EMPTY, min, &dtype)
+                            .map(|s| s.min_reduce().ok().map(|s| s.value().clone()))
+                            .transpose()
+                    })
+                    .transpose()?;
+                let max_value = stats
+                    .max_value
+                    .and_then(|max| {
+                        Series::from_chunk_and_dtype(PlSmallStr::EMPTY, max, &dtype)
+                            .map(|s| s.min_reduce().ok().map(|s| s.value().clone()))
+                            .transpose()
+                    })
+                    .transpose()?;
 
                 (Some(null_count), min_value, max_value)
             },
@@ -162,8 +171,8 @@ fn build_column_stats(
 }
 
 /// Collect leaf-level arrow fields in DFS order, matching the parquet leaf column layout.
-fn collect_leaf_fields<'a>(field: &'a Field, out: &mut Vec<&'a Field>) {
-    match field.dtype() {
+fn collect_leaf_fields(field: Field, out: &mut Vec<Field>) {
+    match field.dtype {
         ArrowDataType::Struct(children) => {
             for child in children {
                 collect_leaf_fields(child, out);
@@ -172,10 +181,14 @@ fn collect_leaf_fields<'a>(field: &'a Field, out: &mut Vec<&'a Field>) {
         ArrowDataType::List(inner)
         | ArrowDataType::LargeList(inner)
         | ArrowDataType::FixedSizeList(inner, _) => {
-            collect_leaf_fields(inner, out);
+            collect_leaf_fields(*inner, out);
         },
         ArrowDataType::Map(inner, _) => {
-            collect_leaf_fields(inner, out);
+            collect_leaf_fields(*inner, out);
+        },
+        ArrowDataType::Extension(inner) => {
+            let field = Field::new(inner.name.clone(), inner.inner.clone(), field.is_nullable);
+            collect_leaf_fields(field, out);
         },
         _ => out.push(field),
     }

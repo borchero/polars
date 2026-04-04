@@ -34,25 +34,47 @@ impl StatisticsColumns {
         field: &ArrowField,
     ) -> PolarsResult<Self> {
         Ok(Self {
-            min: unsafe {
-                Series::_try_from_arrow_unchecked_with_md(
-                    PlSmallStr::EMPTY,
-                    vec![statistics.min_value],
-                    field.dtype(),
-                    field.metadata.as_deref(),
-                )
-            }?
-            .into_column(),
+            min: statistics
+                .min_value
+                .map(|min| {
+                    unsafe {
+                        Series::_try_from_arrow_unchecked_with_md(
+                            PlSmallStr::EMPTY,
+                            vec![min],
+                            field.dtype(),
+                            field.metadata.as_deref(),
+                        )
+                    }
+                    .map(|s| s.into_column())
+                })
+                .transpose()?
+                .unwrap_or_else(|| {
+                    Column::new_empty(
+                        PlSmallStr::EMPTY,
+                        &DataType::from_arrow_dtype(field.dtype()),
+                    )
+                }),
 
-            max: unsafe {
-                Series::_try_from_arrow_unchecked_with_md(
-                    PlSmallStr::EMPTY,
-                    vec![statistics.max_value],
-                    field.dtype(),
-                    field.metadata.as_deref(),
-                )
-            }?
-            .into_column(),
+            max: statistics
+                .max_value
+                .map(|max| {
+                    unsafe {
+                        Series::_try_from_arrow_unchecked_with_md(
+                            PlSmallStr::EMPTY,
+                            vec![max],
+                            field.dtype(),
+                            field.metadata.as_deref(),
+                        )
+                    }
+                    .map(|s| s.into_column())
+                })
+                .transpose()?
+                .unwrap_or_else(|| {
+                    Column::new_empty(
+                        PlSmallStr::EMPTY,
+                        &DataType::from_arrow_dtype(field.dtype()),
+                    )
+                }),
 
             null_count: Series::from_arrow(PlSmallStr::EMPTY, statistics.null_count.boxed())?
                 .into_column(),
