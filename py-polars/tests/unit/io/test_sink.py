@@ -555,6 +555,12 @@ def test_sinked_files_callback_no_columns(tmp_path: Path) -> None:
             dt.timedelta(days=1),
             dt.timedelta(days=5),
         ),
+        (
+            pl.Decimal(precision=2, scale=1),
+            [decimal.Decimal("1.1"), decimal.Decimal("3.3"), decimal.Decimal("2.2")],
+            decimal.Decimal("1.1"),
+            decimal.Decimal("3.3"),
+        ),
         (pl.Int64(), [], None, None),
     ],
 )
