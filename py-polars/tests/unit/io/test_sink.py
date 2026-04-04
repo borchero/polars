@@ -448,12 +448,13 @@ def test_sinked_files_callback_single(tmp_path: Path) -> None:
     assert [Path(x) for x in lst[0].paths] == [out_path]
     assert len(lst[0].files) == 1
 
-    stats = lst[0].files[0]
-    assert 0 < stats.footer_size_bytes < stats.file_size_bytes
-    assert stats.num_rows == lf.collect().height
-    assert len(stats.columns) == 1
+    info = lst[0].files[0]
+    assert info.parquet is not None
+    assert info.num_rows == lf.collect().height
+    assert 0 < info.parquet.footer_size_bytes < info.file_size_bytes
+    assert len(info.parquet.column_stats) == 1
 
-    col_stats = stats.columns[0]
+    col_stats = info.parquet.column_stats[0]
     assert col_stats.name == ["a"]
     assert col_stats.compressed_size_bytes > 0
     assert col_stats.null_count == 0
@@ -508,7 +509,8 @@ def test_sinked_files_callback_no_columns(tmp_path: Path) -> None:
 
     assert len(lst[0].files) == 1
     assert sum(s.num_rows for s in lst[0].files) == 0
-    assert len(lst[0].files[0].columns) == 0
+    assert lst[0].files[0].parquet is not None
+    assert len(lst[0].files[0].parquet.column_stats) == 0
 
 
 @pytest.mark.write_disk
@@ -587,7 +589,9 @@ def test_sinked_files_callback_stats_aggregation(
     )
     assert sum(s.num_rows for s in lst[0].files) == lf.collect().height
 
-    col_a = next(col for s in lst[0].files for col in s.columns)
+    info = lst[0].files[0]
+    assert info.parquet is not None
+    col_a = info.parquet.column_stats[0]
     assert col_a.min_value == expected_min
     assert col_a.max_value == expected_max
 
@@ -606,7 +610,9 @@ def test_sinked_files_callback_stats_nested(tmp_path: Path) -> None:
     lf.sink_parquet(tmp_path / "a.parquet", sinked_files_callback=lst.append)
 
     assert len(lst[0].files) == 1
-    columns = lst[0].files[0].columns
+    info = lst[0].files[0]
+    assert info.parquet is not None
+    columns = info.parquet.column_stats
     assert {tuple(col.name) for col in columns} == {
         ("s", "x"),
         ("s", "y", "list", "element"),

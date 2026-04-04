@@ -169,6 +169,54 @@ class _PartitionByInner:
 
 
 @dataclass(kw_only=True)
+class SinkedFileInfo:
+    """
+    Information about a sinked file.
+
+    .. warning::
+        This functionality is currently considered **unstable**. It may be
+        changed at any point without it being considered a breaking change.
+
+    Attributes
+    ----------
+    path
+        File path.
+    num_rows
+        Total number of rows in the file.
+    file_size_bytes
+        Total file size in bytes.
+    parquet
+        Parquet-specific metadata, or None if not a Parquet file.
+    """
+
+    path: str
+    num_rows: int
+    file_size_bytes: int
+    parquet: ParquetFileMetadata | None = None
+
+
+@dataclass(kw_only=True)
+class ParquetFileMetadata:
+    """
+    Parquet-specific metadata for a sinked file.
+
+    .. warning::
+        This functionality is currently considered **unstable**. It may be
+        changed at any point without it being considered a breaking change.
+
+    Attributes
+    ----------
+    footer_size_bytes
+        Parquet footer size in bytes.
+    column_stats
+        Per-column statistics.
+    """
+
+    footer_size_bytes: int
+    column_stats: list[ParquetColumnStats]
+
+
+@dataclass(kw_only=True)
 class ParquetColumnStats:
     """
     Statistics for a single column in a Parquet file.
@@ -201,40 +249,10 @@ class ParquetColumnStats:
 
 
 @dataclass(kw_only=True)
-class ParquetFileStats:
-    """
-    Statistics for a sinked Parquet file.
-
-    .. warning::
-        This functionality is currently considered **unstable**. It may be
-        changed at any point without it being considered a breaking change.
-
-    Attributes
-    ----------
-    path
-        File path.
-    num_rows
-        Total number of rows in the file.
-    file_size_bytes
-        Total file size in bytes.
-    footer_size_bytes
-        Parquet footer size in bytes.
-    columns
-        Per-column statistics.
-    """
-
-    path: str
-    num_rows: int
-    file_size_bytes: int
-    footer_size_bytes: int
-    columns: list[ParquetColumnStats]
-
-
-@dataclass(kw_only=True)
 class SinkedFilesCallbackArgs:
     """Information on sinked files."""
 
-    files: list[ParquetFileStats]
+    files: list[SinkedFileInfo]
 
     @property
     def paths(self) -> list[str]:

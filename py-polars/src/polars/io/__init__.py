@@ -19,8 +19,9 @@ from polars.io.parquet import (
 from polars.io.partition import (
     FileProviderArgs,
     ParquetColumnStats,
-    ParquetFileStats,
+    ParquetFileMetadata,
     PartitionBy,
+    SinkedFileInfo,
     SinkedFilesCallback,
     SinkedFilesCallbackArgs,
 )
@@ -34,8 +35,9 @@ __all__ = [
     "FileProviderArgs",
     "SinkedFilesCallback",
     "ParquetColumnStats",
-    "ParquetFileStats",
+    "ParquetFileMetadata",
     "PartitionBy",
+    "SinkedFileInfo",
     "SinkedFilesCallback",
     "SinkedFilesCallbackArgs",
     "read_avro",
