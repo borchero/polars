@@ -33,7 +33,7 @@ pub struct UnifiedSinkArgs {
     pub maintain_order: bool,
     pub sync_on_close: SyncOnCloseType,
     pub cloud_options: Option<Arc<CloudOptions>>,
-    pub sinked_paths_callback: Option<SinkedPathsCallback>,
+    pub sinked_files_callback: Option<SinkedFilesCallback>,
 }
 
 impl Default for UnifiedSinkArgs {
@@ -43,7 +43,7 @@ impl Default for UnifiedSinkArgs {
             maintain_order: true,
             sync_on_close: SyncOnCloseType::None,
             cloud_options: None,
-            sinked_paths_callback: None,
+            sinked_files_callback: None,
         }
     }
 }
@@ -465,51 +465,131 @@ pub struct FileSinkOptions {
     pub unified_sink_args: UnifiedSinkArgs,
 }
 
-pub type SinkedPathsCallback = PlanCallback<SinkedPathsCallbackArgs, ()>;
+pub type SinkedFilesCallback = PlanCallback<SinkedFilesCallbackArgs, ()>;
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Hash, PartialEq)]
-pub struct SinkedPathsCallbackArgs {
-    pub path_info_list: Vec<SinkedPathInfo>,
+pub struct SinkedFilesCallbackArgs {
+    pub file_info_list: Vec<SinkedFileInfo>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, Hash, PartialEq)]
-pub struct SinkedPathInfo {
+pub struct SinkedFileInfo {
     pub path: PlRefPath,
+    pub stats: Option<SinkedFileStats>,
 }
 
-impl SinkedPathsCallback {
-    pub fn call_(&self, args: SinkedPathsCallbackArgs) -> PolarsResult<()> {
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Hash, PartialEq)]
+pub struct SinkedFileStats {
+    pub num_rows: u64,
+    pub file_size_bytes: u64,
+    pub footer_size_bytes: u64,
+    pub columns: Vec<SinkedFileColumnStats>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SinkedFileColumnStats {
+    pub name: Vec<PlSmallStr>,
+    pub compressed_size_bytes: i64,
+    pub null_count: Option<i64>,
+    pub min_value: Option<Vec<u8>>,
+    pub max_value: Option<Vec<u8>>,
+}
+
+impl Hash for SinkedFileColumnStats {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.name.hash(state);
+        self.compressed_size_bytes.hash(state);
+        self.null_count.hash(state);
+        self.min_value.hash(state);
+        self.max_value.hash(state);
+    }
+}
+
+impl SinkedFilesCallback {
+    pub fn call_(&self, args: SinkedFilesCallbackArgs) -> PolarsResult<()> {
         match self {
             Self::Rust(func) => (func)(args),
             #[cfg(feature = "python")]
             Self::Python(object) => pyo3::Python::attach(|py| {
                 use pyo3::intern;
-                use pyo3::types::{PyAnyMethods, PyDict, PyList};
+                use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyList};
 
-                let SinkedPathsCallbackArgs { path_info_list } = args;
+                let SinkedFilesCallbackArgs { file_info_list } = args;
 
                 let convert_registry =
                     polars_utils::python_convert_registry::get_python_convert_registry();
 
-                let py_paths = PyList::empty(py);
+                let py_files = PyList::empty(py);
 
-                for SinkedPathInfo { path } in path_info_list {
+                for SinkedFileInfo { path, stats } in file_info_list {
                     use pyo3::types::PyListMethods;
 
-                    let path: &str = path.as_str();
+                    let py_columns = PyList::empty(py);
 
-                    py_paths.append(path)?;
+                    let (num_rows, file_size_bytes, footer_size_bytes) =
+                        if let Some(ref stats) = stats {
+                            for col in &stats.columns {
+                                let col_kwargs = PyDict::new(py);
+                                col_kwargs.set_item(
+                                    intern!(py, "name"),
+                                    col.name.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                                )?;
+                                col_kwargs.set_item(
+                                    intern!(py, "compressed_size_bytes"),
+                                    col.compressed_size_bytes,
+                                )?;
+                                col_kwargs.set_item(intern!(py, "null_count"), col.null_count)?;
+                                col_kwargs.set_item(
+                                    intern!(py, "min_value"),
+                                    col.min_value.as_deref().map(|v| PyBytes::new(py, v)),
+                                )?;
+                                col_kwargs.set_item(
+                                    intern!(py, "max_value"),
+                                    col.max_value.as_deref().map(|v| PyBytes::new(py, v)),
+                                )?;
+
+                                let col_obj = convert_registry
+                                    .py_parquet_column_stats_dataclass()
+                                    .call(py, (), Some(&col_kwargs))?;
+                                py_columns.append(col_obj)?;
+                            }
+                            (
+                                stats.num_rows,
+                                stats.file_size_bytes,
+                                stats.footer_size_bytes,
+                            )
+                        } else {
+                            (0u64, 0u64, 0u64)
+                        };
+
+                    let file_kwargs = PyDict::new(py);
+                    file_kwargs.set_item(intern!(py, "path"), path.as_str())?;
+                    file_kwargs.set_item(intern!(py, "num_rows"), num_rows)?;
+                    file_kwargs.set_item(intern!(py, "file_size_bytes"), file_size_bytes)?;
+                    file_kwargs.set_item(intern!(py, "footer_size_bytes"), footer_size_bytes)?;
+                    file_kwargs.set_item(intern!(py, "columns"), py_columns)?;
+
+                    let file_obj = convert_registry.py_parquet_file_stats_dataclass().call(
+                        py,
+                        (),
+                        Some(&file_kwargs),
+                    )?;
+                    py_files.append(file_obj)?;
                 }
 
                 let kwargs = PyDict::new(py);
-                kwargs.set_item(intern!(py, "paths"), py_paths)?;
+                kwargs.set_item(intern!(py, "files"), py_files)?;
 
                 let args_dataclass = convert_registry
-                    .py_sinked_paths_callback_args_dataclass()
+                    .py_sinked_files_callback_args_dataclass()
                     .call(py, (), Some(&kwargs))?;
 
                 object.call1(py, (args_dataclass,))?;

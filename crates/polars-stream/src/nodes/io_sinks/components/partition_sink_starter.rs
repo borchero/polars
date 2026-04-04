@@ -5,6 +5,7 @@ use polars_error::PolarsResult;
 use polars_io::pl_async;
 use polars_io::utils::sync_on_close::SyncOnCloseType;
 use polars_plan::dsl::file_provider::FileProviderArgs;
+use polars_plan::dsl::sink::SinkedFileInfo;
 
 use crate::async_executor;
 use crate::async_primitives::connector;
@@ -31,10 +32,17 @@ impl PartitionSinkStarter {
         file_permit: FileSinkPermit,
     ) -> PolarsResult<FileSinkTaskData> {
         let file_provider = Arc::clone(&self.file_provider);
-        let file_open_task = tokio_handle_ext::AbortOnDropHandle(
-            pl_async::get_runtime()
-                .spawn(async move { file_provider.open_file(file_provider_args).await }),
-        );
+        let sinked_file_info_list = file_provider.sinked_file_info_list.clone();
+
+        let (path_tx, path_rx) = tokio::sync::oneshot::channel();
+
+        let file_open_task =
+            tokio_handle_ext::AbortOnDropHandle(pl_async::get_runtime().spawn(async move {
+                let (writeable, resolved_path) =
+                    file_provider.open_file(file_provider_args).await?;
+                let _ = path_tx.send(resolved_path);
+                Ok(writeable)
+            }));
 
         let (morsel_tx, morsel_rx) = connector::connector();
 
@@ -45,7 +53,20 @@ impl PartitionSinkStarter {
         )?;
 
         let task_handle = async_executor::spawn(TaskPriority::High, async move {
-            writer_handle.await?;
+            let file_stats = writer_handle.await?;
+
+            if let Some(sinked_file_info_list) = sinked_file_info_list {
+                if let Ok(Some(path)) = path_rx.await {
+                    sinked_file_info_list
+                        .file_info_list
+                        .lock()
+                        .push(SinkedFileInfo {
+                            path,
+                            stats: file_stats,
+                        });
+                }
+            }
+
             Ok(file_permit)
         });
 

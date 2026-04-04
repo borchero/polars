@@ -169,13 +169,78 @@ class _PartitionByInner:
 
 
 @dataclass(kw_only=True)
-class SinkedPathsCallbackArgs:
-    """Information on sinked paths."""
+class ParquetColumnStats:
+    """
+    Statistics for a single column in a Parquet file.
 
-    paths: list[str]
+    .. warning::
+        This functionality is currently considered **unstable**. It may be
+        changed at any point without it being considered a breaking change.
+
+    Attributes
+    ----------
+    name
+        The name of the column, represented as list to reference nested columns.
+    compressed_size_bytes
+        Total compressed size of this column across all row groups.
+    null_count
+        Total number of null values, or None if not available.
+    min_value
+        Raw Parquet-encoded minimum value, or None if not available.
+    max_value
+        Raw Parquet-encoded maximum value, or None if not available.
+    """
+
+    name: list[str]
+    compressed_size_bytes: int
+    null_count: int | None
+    min_value: bytes | None
+    max_value: bytes | None
 
 
-SinkedPathsCallback: TypeAlias = Callable[[SinkedPathsCallbackArgs], None]
+@dataclass(kw_only=True)
+class ParquetFileStats:
+    """
+    Statistics for a sinked Parquet file.
+
+    .. warning::
+        This functionality is currently considered **unstable**. It may be
+        changed at any point without it being considered a breaking change.
+
+    Attributes
+    ----------
+    path
+        File path.
+    num_rows
+        Total number of rows in the file.
+    file_size_bytes
+        Total file size in bytes.
+    footer_size_bytes
+        Parquet footer size in bytes.
+    columns
+        Per-column statistics.
+    """
+
+    path: str
+    num_rows: int
+    file_size_bytes: int
+    footer_size_bytes: int
+    columns: list[ParquetColumnStats]
+
+
+@dataclass(kw_only=True)
+class SinkedFilesCallbackArgs:
+    """Information on sinked files."""
+
+    files: list[ParquetFileStats]
+
+    @property
+    def paths(self) -> list[str]:
+        """Accessor for file paths."""
+        return [f.path for f in self.files]
+
+
+SinkedFilesCallback: TypeAlias = Callable[[SinkedFilesCallbackArgs], None]
 
 
 @dataclass(kw_only=True)
@@ -193,7 +258,7 @@ class _SinkOptions:
     # Cloud
     storage_options: StorageOptionsDict | None = None
     credential_provider: CredentialProviderBuilder | None = None
-    sinked_paths_callback: SinkedPathsCallback | None = None
+    sinked_files_callback: SinkedFilesCallback | None = None
 
 
 def _parse_to_pyexpr_list(

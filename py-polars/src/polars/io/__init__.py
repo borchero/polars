@@ -18,7 +18,11 @@ from polars.io.parquet import (
 )
 from polars.io.partition import (
     FileProviderArgs,
+    ParquetColumnStats,
+    ParquetFileStats,
     PartitionBy,
+    SinkedFilesCallback,
+    SinkedFilesCallbackArgs,
 )
 from polars.io.plugins import _defer as defer
 from polars.io.pyarrow_dataset import scan_pyarrow_dataset
@@ -28,7 +32,12 @@ from polars.io.spreadsheet import read_excel, read_ods
 __all__ = [
     "defer",
     "FileProviderArgs",
+    "SinkedFilesCallback",
+    "ParquetColumnStats",
+    "ParquetFileStats",
     "PartitionBy",
+    "SinkedFilesCallback",
+    "SinkedFilesCallbackArgs",
     "read_avro",
     "read_clipboard",
     "read_csv",

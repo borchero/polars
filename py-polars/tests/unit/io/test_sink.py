@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any
 
+import pyarrow.parquet as pq
 import pytest
 
 import polars as pl
@@ -15,7 +16,7 @@ from polars.testing import assert_frame_equal
 
 if TYPE_CHECKING:
     from polars._typing import EngineType
-    from polars.io.partition import SinkedPathsCallbackArgs
+    from polars.io.partition import SinkedFilesCallbackArgs
     from tests.conftest import PlMonkeyPatch
 
 
@@ -435,39 +436,98 @@ def test_sink_file_provider_forbid_parent_dir_component(s: str) -> None:
 
 
 @pytest.mark.write_disk
-def test_sinked_paths_callback(tmp_path: Path) -> None:
+def test_sinked_files_callback_single(tmp_path: Path) -> None:
     lf = pl.LazyFrame({"a": [0, 1, 2, 3, 4]})
 
     out_path = tmp_path / "a.parquet"
-    lst: list[SinkedPathsCallbackArgs] = []
-    lf.sink_parquet(out_path, _sinked_paths_callback=lst.append)
+    lst: list[SinkedFilesCallbackArgs] = []
+    lf.sink_parquet(out_path, sinked_files_callback=lst.append)
 
     assert [Path(x) for x in lst[0].paths] == [out_path]
+    assert len(lst[0].files) == 1
 
-    out_dir = tmp_path / "multiple"
-    lst = []
+    stats = lst[0].files[0]
+    assert 0 < stats.footer_size_bytes < stats.file_size_bytes
+    assert stats.num_rows == lf.collect().height
+    assert len(stats.columns) == 1
+
+    col_stats = stats.columns[0]
+    assert col_stats.name == ["a"]
+    assert col_stats.compressed_size_bytes > 0
+    assert col_stats.null_count == 0
+    assert col_stats.min_value == b"\x00" * 8
+    assert col_stats.max_value == b"\x04" + b"\x00" * 7
+
+
+@pytest.mark.write_disk
+def test_sinked_files_callback_multiple(tmp_path: Path) -> None:
+    lf = pl.LazyFrame({"a": [0, 1, 2, 3, 4]})
+
+    lst: list[SinkedFilesCallbackArgs] = []
     lf.sink_parquet(
-        pl.PartitionBy(
-            out_dir,
-            max_rows_per_file=1,
-        ),
-        _sinked_paths_callback=lst.append,
+        pl.PartitionBy(tmp_path, max_rows_per_file=1),
+        sinked_files_callback=lst.append,
     )
+    assert len(lst[0].files) == 5
+    assert all(s.num_rows == 1 for s in lst[0].files)
 
-    assert [Path(x) for x in lst[0].paths] == [
-        out_dir / "00000000.parquet",
-        out_dir / "00000001.parquet",
-        out_dir / "00000002.parquet",
-        out_dir / "00000003.parquet",
-        out_dir / "00000004.parquet",
-    ]
 
+@pytest.mark.write_disk
+def test_sinked_files_callback_failure(tmp_path: Path) -> None:
+    lf = pl.LazyFrame({"a": [0, 1, 2, 3, 4]})
     with pytest.raises(ComputeError, match="encountered non-path sink target"):
         lf.sink_parquet(
             pl.PartitionBy(
-                out_dir,
+                tmp_path,
                 file_path_provider=lambda _: io.BytesIO(),
                 max_rows_per_file=1,
             ),
-            _sinked_paths_callback=lambda _: None,
+            sinked_files_callback=lambda _: None,
         )
+
+
+@pytest.mark.write_disk
+def test_sinked_files_callback_no_rows(tmp_path: Path) -> None:
+    lf = pl.LazyFrame({"a": []}, schema={"a": pl.Int64})
+
+    lst: list[SinkedFilesCallbackArgs] = []
+    lf.sink_parquet(tmp_path / "a.parquet", sinked_files_callback=lst.append)
+
+    assert len(lst[0].files) == 1
+    assert sum(s.num_rows for s in lst[0].files) == 0
+
+
+@pytest.mark.write_disk
+def test_sinked_files_callback_no_columns(tmp_path: Path) -> None:
+    lf = pl.LazyFrame()
+
+    lst: list[SinkedFilesCallbackArgs] = []
+    lf.sink_parquet(tmp_path / "a.parquet", sinked_files_callback=lst.append)
+
+    assert len(lst[0].files) == 1
+    assert sum(s.num_rows for s in lst[0].files) == 0
+    assert len(lst[0].files[0].columns) == 0
+
+
+@pytest.mark.write_disk
+def test_sinked_files_callback_stats_aggregation(tmp_path: Path) -> None:
+    lf = pl.LazyFrame({"a": [3, 1, 2, 4, 0], "b": ["x", "y", "z", "w", "v"]})
+
+    lst: list[SinkedFilesCallbackArgs] = []
+    lf.sink_parquet(
+        tmp_path / "a.parquet",
+        sinked_files_callback=lst.append,
+        row_group_size=2,
+    )
+
+    assert len(lst[0].files) == 1
+    assert pq.ParquetFile(tmp_path / "a.parquet").metadata.num_row_groups == 3
+    assert sum(s.num_rows for s in lst[0].files) == lf.collect().height
+
+    col_a = next(col for s in lst[0].files for col in s.columns if col.name == ["a"])
+    assert col_a.min_value == b"\x00" * 8
+    assert col_a.max_value == b"\x04" + b"\x00" * 7
+
+    col_b = next(col for s in lst[0].files for col in s.columns if col.name == ["b"])
+    assert col_b.min_value == b"v"
+    assert col_b.max_value == b"z"

@@ -57,7 +57,7 @@ from polars import api, exceptions, plugins, selectors
 from polars._utils.polars_version import get_polars_version as _get_polars_version
 
 # TODO: remove need for importing wrap utils at top level
-from polars._utils.wrap import wrap_df, wrap_s  # noqa: F401
+from polars._utils.wrap import wrap_df, wrap_s
 from polars.catalog.unity import Catalog
 from polars.config import Config
 from polars.convert import (
@@ -212,8 +212,12 @@ from polars.functions import (
 from polars.interchange import CompatLevel
 from polars.io import (
     FileProviderArgs,
+    ParquetColumnStats,
+    ParquetFileStats,
     PartitionBy,
     ScanCastOptions,
+    SinkedFilesCallback,
+    SinkedFilesCallbackArgs,
     defer,
     read_avro,
     read_clipboard,
@@ -331,8 +335,12 @@ __all__ = [
     # polars.io
     "defer",
     "FileProviderArgs",
+    "ParquetColumnStats",
+    "ParquetFileStats",
     "PartitionBy",
     "ScanCastOptions",
+    "SinkedFilesCallback",
+    "SinkedFilesCallbackArgs",
     "read_avro",
     "read_clipboard",
     "read_csv",

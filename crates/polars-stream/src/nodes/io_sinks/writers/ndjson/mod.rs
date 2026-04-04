@@ -3,6 +3,7 @@ use polars_core::schema::SchemaRef;
 use polars_error::PolarsResult;
 use polars_io::ndjson::NDJsonWriterOptions;
 use polars_io::pl_async;
+use polars_plan::dsl::sink::SinkedFileStats;
 use polars_utils::IdxSize;
 use polars_utils::index::NonZeroIdxSize;
 
@@ -93,7 +94,7 @@ impl FileWriterStarter for NDJsonWriterStarter {
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
         num_pipelines: std::num::NonZeroUsize,
-    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>> {
+    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<Option<SinkedFileStats>>>> {
         let (filled_serializer_tx, filled_serializer_rx) = tokio::sync::mpsc::channel::<(
             async_executor::AbortOnDropHandle<PolarsResult<morsel_serializer::MorselSerializer>>,
             SinkMorselPermit,
@@ -132,7 +133,7 @@ impl FileWriterStarter for NDJsonWriterStarter {
         Ok(async_executor::spawn(TaskPriority::Low, async move {
             io_handle.await.unwrap()?;
             serializer_handle.await;
-            Ok(())
+            Ok(None)
         }))
     }
 }

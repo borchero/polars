@@ -5,6 +5,7 @@ mod indexes;
 pub(crate) mod page;
 mod row_group;
 mod statistics;
+pub use statistics::reduce as reduce_statistics;
 
 #[cfg(feature = "async")]
 mod stream;

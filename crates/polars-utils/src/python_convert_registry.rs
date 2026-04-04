@@ -65,12 +65,40 @@ impl PythonConvertRegistry {
         &CLS
     }
 
-    pub fn py_sinked_paths_callback_args_dataclass(&self) -> &'static Py<PyAny> {
+    pub fn py_sinked_files_callback_args_dataclass(&self) -> &'static Py<PyAny> {
         static CLS: LazyLock<Py<PyAny>> = LazyLock::new(|| {
             Python::attach(|py| {
                 py.import("polars.io.partition")
                     .unwrap()
-                    .getattr("SinkedPathsCallbackArgs")
+                    .getattr("SinkedFilesCallbackArgs")
+                    .unwrap()
+                    .unbind()
+            })
+        });
+
+        &CLS
+    }
+
+    pub fn py_parquet_file_stats_dataclass(&self) -> &'static Py<PyAny> {
+        static CLS: LazyLock<Py<PyAny>> = LazyLock::new(|| {
+            Python::attach(|py| {
+                py.import("polars.io.partition")
+                    .unwrap()
+                    .getattr("ParquetFileStats")
+                    .unwrap()
+                    .unbind()
+            })
+        });
+
+        &CLS
+    }
+
+    pub fn py_parquet_column_stats_dataclass(&self) -> &'static Py<PyAny> {
+        static CLS: LazyLock<Py<PyAny>> = LazyLock::new(|| {
+            Python::attach(|py| {
+                py.import("polars.io.partition")
+                    .unwrap()
+                    .getattr("ParquetColumnStats")
                     .unwrap()
                     .unbind()
             })
