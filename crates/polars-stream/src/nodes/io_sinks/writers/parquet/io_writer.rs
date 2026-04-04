@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{ArrowDataType, ArrowSchema, ArrowSchemaRef, Field};
 use polars_buffer::Buffer;
-use polars_core::prelude::{DataType, Series};
+use polars_core::prelude::Series;
 use polars_error::PolarsResult;
 use polars_io::parquet::write::BatchedWriter;
 use polars_io::prelude::{FileMetadata, KeyValueMetadata};
