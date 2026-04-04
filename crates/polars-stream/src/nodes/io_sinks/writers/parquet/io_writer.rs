@@ -9,7 +9,7 @@ use polars_io::prelude::{FileMetadata, KeyValueMetadata};
 use polars_parquet::parquet::metadata::ThriftFileMetadata;
 use polars_parquet::read::statistics::deserialize_all;
 use polars_parquet::write::{Encoding, FileWriter, SchemaDescriptor, WriteOptions};
-use polars_plan::dsl::sink::{SinkedFileColumnStats, SinkedFileStats};
+use polars_plan::dsl::sink::{SinkedFileStats, SinkedParquetColumnStats, SinkedParquetMetadata};
 use polars_utils::IdxSize;
 use polars_utils::pl_str::PlSmallStr;
 
@@ -108,8 +108,10 @@ fn build_file_stats(
     let stats = SinkedFileStats {
         num_rows: file_metadata.num_rows as u64,
         file_size_bytes: file_size,
-        footer_size_bytes: metadata_size,
-        columns: column_stats,
+        parquet_metadata: Some(SinkedParquetMetadata {
+            footer_size_bytes: metadata_size,
+            columns: column_stats,
+        }),
     };
     Ok(stats)
 }
@@ -118,7 +120,7 @@ fn build_column_stats(
     file_metadata: &FileMetadata,
     field: &Field,
     col_idx: usize,
-) -> PolarsResult<SinkedFileColumnStats> {
+) -> PolarsResult<SinkedParquetColumnStats> {
     // Get basic information
     let column = &file_metadata.schema().columns()[col_idx];
     let compressed_size_bytes: i64 = file_metadata
@@ -171,7 +173,7 @@ fn build_column_stats(
     };
 
     // Build result
-    let stats = SinkedFileColumnStats {
+    let stats = SinkedParquetColumnStats {
         name: column.path_in_schema.clone(),
         compressed_size_bytes: compressed_size_bytes as u64,
         null_count,

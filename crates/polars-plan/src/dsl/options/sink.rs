@@ -489,14 +489,21 @@ pub struct SinkedFileInfo {
 pub struct SinkedFileStats {
     pub num_rows: u64,
     pub file_size_bytes: u64,
+    pub parquet_metadata: Option<SinkedParquetMetadata>,
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
+#[derive(Clone, Debug, Hash, PartialEq)]
+pub struct SinkedParquetMetadata {
     pub footer_size_bytes: u64,
-    pub columns: Vec<SinkedFileColumnStats>,
+    pub columns: Vec<SinkedParquetColumnStats>,
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "dsl-schema", derive(schemars::JsonSchema))]
 #[derive(Clone, Debug, PartialEq)]
-pub struct SinkedFileColumnStats {
+pub struct SinkedParquetColumnStats {
     pub name: Vec<PlSmallStr>,
     pub compressed_size_bytes: u64,
     pub null_count: Option<IdxSize>,
@@ -508,7 +515,7 @@ pub struct SinkedFileColumnStats {
     pub max_value: Option<AnyValue<'static>>,
 }
 
-impl Hash for SinkedFileColumnStats {
+impl Hash for SinkedParquetColumnStats {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state);
         self.compressed_size_bytes.hash(state);
@@ -537,58 +544,64 @@ impl SinkedFilesCallback {
                 for SinkedFileInfo { path, stats } in file_info_list {
                     use pyo3::types::PyListMethods;
 
-                    let py_parquet_metadata = if let Some(ref stats) = stats {
-                        let py_columns = PyList::empty(py);
+                    let (num_rows, file_size_bytes, py_parquet_metadata) = if let Some(stats) =
+                        stats
+                    {
+                        let py_parquet_metadata = if let Some(parquet_metadata) =
+                            stats.parquet_metadata
+                        {
+                            let py_columns = PyList::empty(py);
 
-                        for col in &stats.columns {
-                            let col_kwargs = PyDict::new(py);
-                            col_kwargs.set_item(
-                                intern!(py, "name"),
-                                col.name.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                            )?;
-                            col_kwargs.set_item(
-                                intern!(py, "compressed_size_bytes"),
-                                col.compressed_size_bytes,
-                            )?;
-                            col_kwargs.set_item(intern!(py, "null_count"), col.null_count)?;
-                            let anyvalue_converter = &convert_registry.to_py.anyvalue;
-                            col_kwargs.set_item(
-                                intern!(py, "min_value"),
-                                col.min_value.as_ref().map(|v| {
-                                    (anyvalue_converter)(v as &dyn std::any::Any).unwrap()
-                                }),
-                            )?;
-                            col_kwargs.set_item(
-                                intern!(py, "max_value"),
-                                col.max_value.as_ref().map(|v| {
-                                    (anyvalue_converter)(v as &dyn std::any::Any).unwrap()
-                                }),
-                            )?;
+                            for col in &parquet_metadata.columns {
+                                let col_kwargs = PyDict::new(py);
+                                col_kwargs.set_item(
+                                    intern!(py, "name"),
+                                    col.name.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                                )?;
+                                col_kwargs.set_item(
+                                    intern!(py, "compressed_size_bytes"),
+                                    col.compressed_size_bytes,
+                                )?;
+                                col_kwargs.set_item(intern!(py, "null_count"), col.null_count)?;
+                                let anyvalue_converter = &convert_registry.to_py.anyvalue;
+                                col_kwargs.set_item(
+                                    intern!(py, "min_value"),
+                                    col.min_value.as_ref().map(|v| {
+                                        (anyvalue_converter)(v as &dyn std::any::Any).unwrap()
+                                    }),
+                                )?;
+                                col_kwargs.set_item(
+                                    intern!(py, "max_value"),
+                                    col.max_value.as_ref().map(|v| {
+                                        (anyvalue_converter)(v as &dyn std::any::Any).unwrap()
+                                    }),
+                                )?;
 
-                            let col_obj = convert_registry
-                                .py_parquet_column_stats_dataclass()
-                                .call(py, (), Some(&col_kwargs))?;
-                            py_columns.append(col_obj)?;
-                        }
+                                let col_obj = convert_registry
+                                    .py_parquet_column_stats_dataclass()
+                                    .call(py, (), Some(&col_kwargs))?;
+                                py_columns.append(col_obj)?;
+                            }
 
-                        let parquet_kwargs = PyDict::new(py);
-                        parquet_kwargs
-                            .set_item(intern!(py, "footer_size_bytes"), stats.footer_size_bytes)?;
-                        parquet_kwargs.set_item(intern!(py, "columns"), py_columns)?;
+                            let parquet_kwargs = PyDict::new(py);
+                            parquet_kwargs.set_item(
+                                intern!(py, "footer_size_bytes"),
+                                parquet_metadata.footer_size_bytes,
+                            )?;
+                            parquet_kwargs.set_item(intern!(py, "columns"), py_columns)?;
 
-                        Some(convert_registry.py_parquet_file_metadata_dataclass().call(
-                            py,
-                            (),
-                            Some(&parquet_kwargs),
-                        )?)
+                            Some(convert_registry.py_parquet_file_metadata_dataclass().call(
+                                py,
+                                (),
+                                Some(&parquet_kwargs),
+                            )?)
+                        } else {
+                            None
+                        };
+
+                        (stats.num_rows, stats.file_size_bytes, py_parquet_metadata)
                     } else {
-                        None
-                    };
-
-                    let (num_rows, file_size_bytes) = if let Some(ref stats) = stats {
-                        (stats.num_rows, stats.file_size_bytes)
-                    } else {
-                        (0u64, 0u64)
+                        (0u64, 0u64, None)
                     };
 
                     let file_kwargs = PyDict::new(py);
