@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, Literal, TypeAlias
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, TypeAlias
 
 from polars._utils.parse.expr import parse_into_list_of_expressions
 from polars._utils.unstable import issue_unstable_warning
@@ -186,16 +186,18 @@ class ParquetColumnStats:
     null_count
         Total number of null values, or None if not available.
     min_value
-        Raw Parquet-encoded minimum value, or None if not available.
+        Minimum value for the column, or None if not available.
+        The type depends on the column's type.
     max_value
-        Raw Parquet-encoded maximum value, or None if not available.
+        Maximum value for the column, or None if not available.
+        The type depends on the column's type.
     """
 
     name: list[str]
     compressed_size_bytes: int
     null_count: int | None
-    min_value: bytes | None
-    max_value: bytes | None
+    min_value: Any | None
+    max_value: Any | None
 
 
 @dataclass(kw_only=True)

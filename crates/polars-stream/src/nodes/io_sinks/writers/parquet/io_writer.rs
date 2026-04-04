@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
-use arrow::datatypes::ArrowSchemaRef;
+use arrow::datatypes::{ArrowDataType, ArrowSchema, ArrowSchemaRef, Field};
 use polars_buffer::Buffer;
+use polars_core::prelude::{DataType, Series};
 use polars_error::PolarsResult;
 use polars_io::parquet::write::BatchedWriter;
 use polars_io::prelude::{FileMetadata, KeyValueMetadata};
-use polars_parquet::parquet::error::ParquetResult;
 use polars_parquet::parquet::metadata::ThriftFileMetadata;
-use polars_parquet::parquet::write::reduce_statistics;
+use polars_parquet::read::statistics::deserialize_all;
 use polars_parquet::write::{Encoding, FileWriter, SchemaDescriptor, WriteOptions};
 use polars_plan::dsl::sink::{SinkedFileColumnStats, SinkedFileStats};
+use polars_utils::IdxSize;
+use polars_utils::pl_str::PlSmallStr;
 
 use crate::async_executor;
 use crate::nodes::io_sinks::writers::interface::FileOpenTaskHandle;
@@ -44,10 +46,11 @@ impl IOWriter {
         let (mut file, sync_on_close) = file.await?;
         let mut buffered_file = file.as_buffered();
 
+        let arrow_schema = Arc::unwrap_or_clone(arrow_schema);
         let mut parquet_writer = BatchedWriter::new(
             std::sync::Mutex::new(FileWriter::new_with_parquet_schema(
                 &mut *buffered_file,
-                Arc::unwrap_or_clone(arrow_schema),
+                arrow_schema.clone(),
                 Arc::unwrap_or_clone(schema_descriptor),
                 write_options,
             )),
@@ -71,7 +74,7 @@ impl IOWriter {
 
         let (file_size, metadata_size) = parquet_writer.finish()?;
         let metadata = parquet_writer.into_metadata();
-        let file_stats = build_file_stats(metadata, file_size, metadata_size)?;
+        let file_stats = build_file_stats(arrow_schema, metadata, file_size, metadata_size)?;
 
         drop(buffered_file);
 
@@ -82,6 +85,7 @@ impl IOWriter {
 }
 
 fn build_file_stats(
+    arrow_schema: ArrowSchema,
     metadata: ThriftFileMetadata,
     file_size: u64,
     metadata_size: u64,
@@ -89,8 +93,16 @@ fn build_file_stats(
     let file_metadata = FileMetadata::try_from_thrift(metadata)?;
     let num_columns = file_metadata.schema().columns().len();
 
+    // Flatten the arrow schema fields to leaf fields to match parquet's leaf column
+    // layout. This is correct because both `to_parquet_type` (which builds the parquet
+    // schema from the arrow schema) and `SchemaDescriptor::new` (which collects leaf
+    // columns) use the same DFS order over struct children.
+    let mut leaf_fields = Vec::with_capacity(num_columns);
+    for field in arrow_schema.iter_values() {
+        collect_leaf_fields(field, &mut leaf_fields);
+    }
     let column_stats = (0..num_columns)
-        .map(|col_idx| build_column_stats(&file_metadata, col_idx))
+        .map(|col_idx| build_column_stats(&file_metadata, leaf_fields[col_idx], col_idx))
         .collect::<PolarsResult<Vec<_>>>()?;
 
     let stats = SinkedFileStats {
@@ -104,36 +116,67 @@ fn build_file_stats(
 
 fn build_column_stats(
     file_metadata: &FileMetadata,
+    field: &Field,
     col_idx: usize,
 ) -> PolarsResult<SinkedFileColumnStats> {
     // Get basic information
     let column = &file_metadata.schema().columns()[col_idx];
-    let compressed_size_bytes = file_metadata
+    let compressed_size_bytes: i64 = file_metadata
         .row_groups
         .iter()
         .map(|rg| rg.parquet_columns()[col_idx].compressed_size())
         .sum();
 
-    // Obtain stats across row groups
-    let all_stats = file_metadata
-        .row_groups
-        .iter()
-        .filter_map(|rg| {
-            rg.parquet_columns()[col_idx]
-                .statistics()
-                .map(|r| r.map(Some))
-        })
-        .collect::<ParquetResult<Vec<_>>>()?;
-    let all_stats_opt = all_stats.iter().collect::<Vec<_>>();
-    let full_stats = reduce_statistics(&all_stats_opt)?;
+    // Deserialize statistics across all row groups using deserialize_all
+    let (null_count, min_value, max_value) = if !file_metadata.row_groups.is_empty() {
+        match deserialize_all(field, &file_metadata.row_groups, col_idx)? {
+            Some(stats) => {
+                let null_count: IdxSize = stats.null_count.non_null_values_iter().sum();
+
+                let dtype = DataType::from_arrow_dtype(field.dtype());
+                let min_series =
+                    Series::from_chunk_and_dtype(PlSmallStr::EMPTY, stats.min_value, &dtype)?;
+                let min_value = min_series.min_reduce().ok().map(|s| s.value().clone());
+
+                let max_series =
+                    Series::from_chunk_and_dtype(PlSmallStr::EMPTY, stats.max_value, &dtype)?;
+                let max_value = max_series.max_reduce().ok().map(|s| s.value().clone());
+
+                (Some(null_count), min_value, max_value)
+            },
+            None => (None, None, None),
+        }
+    } else {
+        (None, None, None)
+    };
 
     // Build result
     let stats = SinkedFileColumnStats {
         name: column.path_in_schema.clone(),
-        compressed_size_bytes,
-        null_count: full_stats.as_ref().and_then(|s| s.null_count()),
-        min_value: full_stats.as_ref().and_then(|s| s.serialize().min_value),
-        max_value: full_stats.as_ref().and_then(|s| s.serialize().max_value),
+        compressed_size_bytes: compressed_size_bytes as u64,
+        null_count,
+        min_value,
+        max_value,
     };
     Ok(stats)
+}
+
+/// Collect leaf-level arrow fields in DFS order, matching the parquet leaf column layout.
+fn collect_leaf_fields<'a>(field: &'a Field, out: &mut Vec<&'a Field>) {
+    match field.dtype() {
+        ArrowDataType::Struct(children) => {
+            for child in children {
+                collect_leaf_fields(child, out);
+            }
+        },
+        ArrowDataType::List(inner)
+        | ArrowDataType::LargeList(inner)
+        | ArrowDataType::FixedSizeList(inner, _) => {
+            collect_leaf_fields(inner, out);
+        },
+        ArrowDataType::Map(inner, _) => {
+            collect_leaf_fields(inner, out);
+        },
+        _ => out.push(field),
+    }
 }

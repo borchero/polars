@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+import decimal
 import io
 import os
 from itertools import permutations
@@ -455,8 +457,8 @@ def test_sinked_files_callback_single(tmp_path: Path) -> None:
     assert col_stats.name == ["a"]
     assert col_stats.compressed_size_bytes > 0
     assert col_stats.null_count == 0
-    assert col_stats.min_value == b"\x00" * 8
-    assert col_stats.max_value == b"\x04" + b"\x00" * 7
+    assert col_stats.min_value == 0
+    assert col_stats.max_value == 4
 
 
 @pytest.mark.write_disk
@@ -510,8 +512,60 @@ def test_sinked_files_callback_no_columns(tmp_path: Path) -> None:
 
 
 @pytest.mark.write_disk
-def test_sinked_files_callback_stats_aggregation(tmp_path: Path) -> None:
-    lf = pl.LazyFrame({"a": [3, 1, 2, 4, 0], "b": ["x", "y", "z", "w", "v"]})
+@pytest.mark.parametrize(
+    ("dtype", "values", "expected_min", "expected_max"),
+    [
+        (pl.UInt8(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.UInt16(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.UInt32(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.UInt64(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.Int8(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.Int16(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.Int32(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.Int64(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.Float32(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.Float64(), [1, 3, 2, 4, 0], 0, 4),
+        (pl.String(), ["x", "q", "m", "o", "z"], "m", "z"),
+        (pl.Boolean(), [True, False, True], False, True),
+        (
+            pl.Date(),
+            [dt.date(2020, 1, 1), dt.date(2022, 7, 5), dt.date(2019, 9, 19)],
+            dt.date(2019, 9, 19),
+            dt.date(2022, 7, 5),
+        ),
+        (
+            pl.Datetime(),
+            [
+                dt.datetime(2020, 1, 1),
+                dt.datetime(2022, 7, 5),
+                dt.datetime(2019, 9, 19),
+            ],
+            dt.datetime(2019, 9, 19),
+            dt.datetime(2022, 7, 5),
+        ),
+        (
+            pl.Time(),
+            [dt.time(0), dt.time(18, 45), dt.time(12)],
+            dt.time(0),
+            dt.time(18, 45),
+        ),
+        (
+            pl.Duration(),
+            [dt.timedelta(days=1), dt.timedelta(days=5), dt.timedelta(days=3)],
+            dt.timedelta(days=1),
+            dt.timedelta(days=5),
+        ),
+        (pl.Int64(), [], None, None),
+    ],
+)
+def test_sinked_files_callback_stats_aggregation(
+    tmp_path: Path,
+    dtype: pl.DataType,
+    values: list[Any],
+    expected_min: Any,
+    expected_max: Any,
+) -> None:
+    lf = pl.LazyFrame({"a": values}, schema={"a": dtype})
 
     lst: list[SinkedFilesCallbackArgs] = []
     lf.sink_parquet(
@@ -521,13 +575,45 @@ def test_sinked_files_callback_stats_aggregation(tmp_path: Path) -> None:
     )
 
     assert len(lst[0].files) == 1
-    assert pq.ParquetFile(tmp_path / "a.parquet").metadata.num_row_groups == 3
+    assert (
+        pq.ParquetFile(tmp_path / "a.parquet").metadata.num_row_groups
+        == (len(values) + 1) // 2
+    )
     assert sum(s.num_rows for s in lst[0].files) == lf.collect().height
 
-    col_a = next(col for s in lst[0].files for col in s.columns if col.name == ["a"])
-    assert col_a.min_value == b"\x00" * 8
-    assert col_a.max_value == b"\x04" + b"\x00" * 7
+    col_a = next(col for s in lst[0].files for col in s.columns)
+    assert col_a.min_value == expected_min
+    assert col_a.max_value == expected_max
 
-    col_b = next(col for s in lst[0].files for col in s.columns if col.name == ["b"])
-    assert col_b.min_value == b"v"
-    assert col_b.max_value == b"z"
+
+@pytest.mark.write_disk
+def test_sinked_files_callback_stats_nested(tmp_path: Path) -> None:
+    lf = pl.LazyFrame(
+        {
+            "s": [{"x": 1, "y": [2, 3]}, {"x": 4, "y": [5, 6]}],
+            "i": [8, 9],
+            "l": [[1, 2], [3, 4]],
+        }
+    )
+
+    lst: list[SinkedFilesCallbackArgs] = []
+    lf.sink_parquet(tmp_path / "a.parquet", sinked_files_callback=lst.append)
+
+    assert len(lst[0].files) == 1
+    columns = lst[0].files[0].columns
+    assert {tuple(col.name) for col in columns} == {
+        ("s", "x"),
+        ("s", "y", "list", "element"),
+        ("i",),
+        ("l", "list", "element"),
+    }
+
+    stats_s_x = next(c for c in columns if c.name == ["s", "x"])
+    stats_s_y = next(c for c in columns if c.name == ["s", "y", "list", "element"])
+    stats_i = next(c for c in columns if c.name == ["i"])
+    stats_l = next(c for c in columns if c.name == ["l", "list", "element"])
+
+    assert (stats_s_x.min_value, stats_s_x.max_value) == (1, 4)
+    assert (stats_s_y.min_value, stats_s_y.max_value) == (2, 6)
+    assert (stats_i.min_value, stats_i.max_value) == (8, 9)
+    assert (stats_l.min_value, stats_l.max_value) == (1, 4)

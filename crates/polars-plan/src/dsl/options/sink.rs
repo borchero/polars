@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
+use polars_core::datatypes::AnyValue;
 use polars_core::error::PolarsResult;
 use polars_core::frame::DataFrame;
 use polars_core::prelude::PlHashSet;
@@ -497,10 +498,14 @@ pub struct SinkedFileStats {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SinkedFileColumnStats {
     pub name: Vec<PlSmallStr>,
-    pub compressed_size_bytes: i64,
-    pub null_count: Option<i64>,
-    pub min_value: Option<Vec<u8>>,
-    pub max_value: Option<Vec<u8>>,
+    pub compressed_size_bytes: u64,
+    pub null_count: Option<IdxSize>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "dsl-schema", schemars(skip))]
+    pub min_value: Option<AnyValue<'static>>,
+    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(feature = "dsl-schema", schemars(skip))]
+    pub max_value: Option<AnyValue<'static>>,
 }
 
 impl Hash for SinkedFileColumnStats {
@@ -520,7 +525,7 @@ impl SinkedFilesCallback {
             #[cfg(feature = "python")]
             Self::Python(object) => pyo3::Python::attach(|py| {
                 use pyo3::intern;
-                use pyo3::types::{PyAnyMethods, PyBytes, PyDict, PyList};
+                use pyo3::types::{PyAnyMethods, PyDict, PyList};
 
                 let SinkedFilesCallbackArgs { file_info_list } = args;
 
@@ -547,13 +552,18 @@ impl SinkedFilesCallback {
                                     col.compressed_size_bytes,
                                 )?;
                                 col_kwargs.set_item(intern!(py, "null_count"), col.null_count)?;
+                                let anyvalue_converter = &convert_registry.to_py.anyvalue;
                                 col_kwargs.set_item(
                                     intern!(py, "min_value"),
-                                    col.min_value.as_deref().map(|v| PyBytes::new(py, v)),
+                                    col.min_value.as_ref().map(|v| {
+                                        (anyvalue_converter)(v as &dyn std::any::Any).unwrap()
+                                    }),
                                 )?;
                                 col_kwargs.set_item(
                                     intern!(py, "max_value"),
-                                    col.max_value.as_deref().map(|v| PyBytes::new(py, v)),
+                                    col.max_value.as_ref().map(|v| {
+                                        (anyvalue_converter)(v as &dyn std::any::Any).unwrap()
+                                    }),
                                 )?;
 
                                 let col_obj = convert_registry

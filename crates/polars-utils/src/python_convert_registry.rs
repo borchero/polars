@@ -23,6 +23,7 @@ pub struct ToPythonConvertRegistry {
     pub series: ToPython,
     pub dsl_plan: ToPython,
     pub schema: ToPython,
+    pub anyvalue: ToPython,
 }
 
 impl ToPythonConvertRegistry {
