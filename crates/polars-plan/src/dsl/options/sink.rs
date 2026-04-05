@@ -550,7 +550,7 @@ impl SinkedFilesCallback {
                         let py_parquet_metadata = if let Some(parquet_metadata) =
                             stats.parquet_metadata
                         {
-                            let py_columns = PyList::empty(py);
+                            let py_column_stats = PyList::empty(py);
 
                             for col in &parquet_metadata.columns {
                                 let col_kwargs = PyDict::new(py);
@@ -580,7 +580,7 @@ impl SinkedFilesCallback {
                                 let col_obj = convert_registry
                                     .py_parquet_column_stats_dataclass()
                                     .call(py, (), Some(&col_kwargs))?;
-                                py_columns.append(col_obj)?;
+                                py_column_stats.append(col_obj)?;
                             }
 
                             let parquet_kwargs = PyDict::new(py);
@@ -588,7 +588,8 @@ impl SinkedFilesCallback {
                                 intern!(py, "footer_size_bytes"),
                                 parquet_metadata.footer_size_bytes,
                             )?;
-                            parquet_kwargs.set_item(intern!(py, "columns"), py_columns)?;
+                            parquet_kwargs
+                                .set_item(intern!(py, "column_stats"), py_column_stats)?;
 
                             Some(convert_registry.py_parquet_file_metadata_dataclass().call(
                                 py,

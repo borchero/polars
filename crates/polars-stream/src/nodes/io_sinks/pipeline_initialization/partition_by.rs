@@ -159,6 +159,7 @@ pub fn start_partition_sink_pipeline(
         writer_starter: Arc::clone(&file_writer_starter),
         sync_on_close,
         num_pipelines_per_sink,
+        compute_file_stats: sinked_file_info_list.is_some(),
     };
 
     let partition_morsel_sender = PartitionMorselSender {

@@ -106,8 +106,19 @@ pub fn start_single_file_sink_pipeline(
     }
 
     let (writer_tx, writer_rx) = connector::connector();
-    let writer_handle =
-        file_writer_starter.start_file_writer(writer_rx, file_open_task, num_pipelines_per_sink)?;
+    let (file_stats_tx, file_stats_rx) = if sinked_files_callback.is_some() {
+        let (tx, rx) = connector::connector();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    let writer_handle = file_writer_starter.start_file_writer(
+        writer_rx,
+        file_open_task,
+        num_pipelines_per_sink,
+        file_stats_tx,
+    )?;
 
     let empty_with_schema_df = DataFrame::empty_with_arc_schema(file_schema.clone());
     let inflight_morsel_semaphore =
@@ -129,7 +140,7 @@ pub fn start_single_file_sink_pipeline(
     let handle = async_executor::AbortOnDropHandle::new(async_executor::spawn(
         TaskPriority::High,
         async move {
-            let file_stats = writer_handle.await?;
+            writer_handle.await?;
             let sent_size = resize_pipeline_handle.await?;
 
             if verbose {
@@ -137,13 +148,14 @@ pub fn start_single_file_sink_pipeline(
             }
 
             if let Some(sinked_files_callback) = sinked_files_callback {
+                let stats = file_stats_rx.and_then(|mut rx| rx.try_recv().ok());
                 let sinked_file_info_list = SinkedFileInfoList::default();
                 sinked_file_info_list
                     .file_info_list
                     .lock()
                     .push(SinkedFileInfo {
                         path: sinked_path.unwrap(),
-                        stats: file_stats,
+                        stats,
                     });
 
                 if verbose {

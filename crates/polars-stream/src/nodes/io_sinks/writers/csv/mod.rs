@@ -95,7 +95,8 @@ impl FileWriterStarter for CsvWriterStarter {
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
         num_pipelines: std::num::NonZeroUsize,
-    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<Option<SinkedFileStats>>>> {
+        _file_stats_tx: Option<connector::Sender<SinkedFileStats>>,
+    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>> {
         let (filled_serializer_tx, filled_serializer_rx) = tokio::sync::mpsc::channel::<(
             async_executor::AbortOnDropHandle<PolarsResult<morsel_serializer::MorselSerializer>>,
             SinkMorselPermit,
@@ -137,7 +138,7 @@ impl FileWriterStarter for CsvWriterStarter {
         Ok(async_executor::spawn(TaskPriority::Low, async move {
             io_handle.await.unwrap()?;
             serializer_handle.await;
-            Ok(None)
+            Ok(())
         }))
     }
 }

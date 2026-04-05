@@ -9,6 +9,7 @@ use polars_plan::dsl::file_provider::{FileProviderReturn, FileProviderType};
 use polars_plan::prelude::file_provider::FileProviderArgs;
 use polars_utils::pl_path::PlRefPath;
 
+use crate::async_primitives::connector::Sender;
 use crate::nodes::io_sinks::components::sinked_file_info_list::SinkedFileInfoList;
 
 pub struct FileProvider {
@@ -25,7 +26,8 @@ impl FileProvider {
     pub async fn open_file(
         &self,
         args: FileProviderArgs,
-    ) -> PolarsResult<(Writeable, Option<PlRefPath>)> {
+        path_tx: Option<Sender<PlRefPath>>,
+    ) -> PolarsResult<Writeable> {
         let provided_path: String = 'provided_path: {
             let provided_writeable = match &self.provider_type {
                 FileProviderType::Hive(p) => break 'provided_path p.get_path(args)?,
@@ -45,11 +47,11 @@ impl FileProvider {
                 },
             };
 
-            if self.sinked_file_info_list.is_some() {
+            if path_tx.is_some() {
                 return Err(SinkedFileInfoList::non_path_error());
             }
 
-            return Ok((provided_writeable, None));
+            return Ok(provided_writeable);
         };
 
         let path = self.base_path.join(&provided_path);
@@ -83,14 +85,15 @@ impl FileProvider {
                 .await;
         }
 
-        let writeable = Writeable::try_new(
-            path.clone(),
+        if let Some(mut tx) = path_tx {
+            tx.send(path.clone()).await.unwrap();
+        }
+        Writeable::try_new(
+            path,
             self.cloud_options.as_deref(),
             self.upload_chunk_size,
             self.upload_max_concurrency,
             self.io_metrics.clone(),
-        )?;
-
-        Ok((writeable, Some(path)))
+        )
     }
 }

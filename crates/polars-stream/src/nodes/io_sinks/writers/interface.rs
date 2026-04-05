@@ -29,7 +29,8 @@ pub trait FileWriterStarter: Send + Sync + 'static {
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
         num_pipelines: NonZeroUsize,
-    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<Option<SinkedFileStats>>>>;
+        file_stats_tx: Option<connector::Sender<SinkedFileStats>>,
+    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>>;
 }
 
 pub struct FileOpenTaskHandle {

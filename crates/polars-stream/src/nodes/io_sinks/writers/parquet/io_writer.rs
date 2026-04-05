@@ -31,7 +31,7 @@ pub struct IOWriter {
 }
 
 impl IOWriter {
-    pub async fn run(self) -> PolarsResult<SinkedFileStats> {
+    pub async fn run(self, compute_file_stats: bool) -> PolarsResult<Option<SinkedFileStats>> {
         let IOWriter {
             file,
             mut encoded_row_group_rx,
@@ -74,10 +74,18 @@ impl IOWriter {
 
         let (file_size, metadata_size) = parquet_writer.finish()?;
         let metadata = parquet_writer.into_metadata();
-        let file_stats = build_file_stats(arrow_schema, metadata, file_size, metadata_size)?;
+        let file_stats = if compute_file_stats {
+            Some(build_file_stats(
+                arrow_schema,
+                metadata,
+                file_size,
+                metadata_size,
+            )?)
+        } else {
+            None
+        };
 
         drop(buffered_file);
-
         file.close(sync_on_close)?;
 
         Ok(file_stats)
@@ -135,34 +143,23 @@ fn build_column_stats(
             Some(stats) => {
                 let null_count: IdxSize = stats.null_count.non_null_values_iter().sum();
 
-                let min_value = stats
-                    .min_value
-                    .and_then(|min| {
-                        unsafe {
-                            Series::_try_from_arrow_unchecked(
-                                PlSmallStr::EMPTY,
-                                vec![min],
-                                field.dtype(),
-                            )
-                        }
-                        .map(|s| s.min_reduce().ok().map(|s| s.value().clone()))
-                        .transpose()
-                    })
-                    .transpose()?;
-                let max_value = stats
-                    .max_value
-                    .and_then(|max| {
-                        unsafe {
-                            Series::_try_from_arrow_unchecked(
-                                PlSmallStr::EMPTY,
-                                vec![max],
-                                field.dtype(),
-                            )
-                        }
-                        .map(|s| s.max_reduce().ok().map(|s| s.value().clone()))
-                        .transpose()
-                    })
-                    .transpose()?;
+                let min_series = unsafe {
+                    Series::_try_from_arrow_unchecked(
+                        PlSmallStr::EMPTY,
+                        vec![stats.min_value],
+                        field.dtype(),
+                    )
+                }?;
+                let min_value = min_series.min_reduce().ok().map(|s| s.value().clone());
+
+                let max_series = unsafe {
+                    Series::_try_from_arrow_unchecked(
+                        PlSmallStr::EMPTY,
+                        vec![stats.max_value],
+                        field.dtype(),
+                    )
+                }?;
+                let max_value = max_series.max_reduce().ok().map(|s| s.value().clone());
 
                 (Some(null_count), min_value, max_value)
             },

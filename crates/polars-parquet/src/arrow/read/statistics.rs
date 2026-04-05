@@ -69,8 +69,8 @@ pub struct ArrowColumnStatistics {
 pub struct ArrowColumnStatisticsArrays {
     pub null_count: PrimitiveArray<IdxSize>,
     pub distinct_count: PrimitiveArray<IdxSize>,
-    pub min_value: Option<Box<dyn Array>>,
-    pub max_value: Option<Box<dyn Array>>,
+    pub min_value: Box<dyn Array>,
+    pub max_value: Box<dyn Array>,
 }
 
 fn timestamp(logical_type: Option<&PrimitiveLogicalType>, time_unit: TimeUnit, x: i64) -> i64 {
@@ -357,7 +357,7 @@ pub fn deserialize_all(
                         distinct_count.push(v_distinct_count);
                     }
 
-                    (Some(min_arr.freeze().to_boxed()), Some(max_arr.freeze().to_boxed()))
+                    (min_arr.freeze().to_boxed(), max_arr.freeze().to_boxed())
                 }};
                 ($expect:ident, $arr:ty, @prim $from:ty $(as $to:ty)? $(, $map:expr)?) => {{
                     rmap!(
@@ -404,8 +404,8 @@ pub fn deserialize_all(
             use ParquetPhysicalType as PPT;
             let (min_value, max_value) = match (field.dtype(), physical_type) {
                 (D::Null, _) => (
-                    Some(NullArray::new(ArrowDataType::Null, row_groups.len()).to_boxed()),
-                    Some(NullArray::new(ArrowDataType::Null, row_groups.len()).to_boxed()),
+                    NullArray::new(ArrowDataType::Null, row_groups.len()).to_boxed(),
+                    NullArray::new(ArrowDataType::Null, row_groups.len()).to_boxed(),
                 ),
 
                 (D::Boolean, _) => rmap!(
@@ -531,10 +531,7 @@ pub fn deserialize_all(
                     )
                 },
 
-                _ => {
-                    // @TODO: These are all a bit more complex, skip for now.
-                    (None, None)
-                },
+                other => todo!("{:?}", other),
             };
 
             Ok(Some(ArrowColumnStatisticsArrays {

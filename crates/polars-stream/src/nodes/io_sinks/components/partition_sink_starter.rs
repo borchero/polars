@@ -22,6 +22,7 @@ pub struct PartitionSinkStarter {
     pub writer_starter: Arc<dyn FileWriterStarter>,
     pub sync_on_close: SyncOnCloseType,
     pub num_pipelines_per_sink: NonZeroUsize,
+    pub compute_file_stats: bool,
 }
 
 impl PartitionSinkStarter {
@@ -32,39 +33,33 @@ impl PartitionSinkStarter {
         file_permit: FileSinkPermit,
     ) -> PolarsResult<FileSinkTaskData> {
         let file_provider = Arc::clone(&self.file_provider);
-        let sinked_file_info_list = file_provider.sinked_file_info_list.clone();
-
-        let (path_tx, path_rx) = tokio::sync::oneshot::channel();
-
-        let file_open_task =
-            tokio_handle_ext::AbortOnDropHandle(pl_async::get_runtime().spawn(async move {
-                let (writeable, resolved_path) =
-                    file_provider.open_file(file_provider_args).await?;
-                let _ = path_tx.send(resolved_path);
-                Ok(writeable)
-            }));
+        let (path_tx, path_rx) = opt_connector(self.file_provider.sinked_file_info_list.is_some());
+        let file_open_task = tokio_handle_ext::AbortOnDropHandle(
+            pl_async::get_runtime()
+                .spawn(async move { file_provider.open_file(file_provider_args, path_tx).await }),
+        );
 
         let (morsel_tx, morsel_rx) = connector::connector();
+        let (file_stats_tx, file_stats_rx) = opt_connector(self.compute_file_stats);
 
         let writer_handle = self.writer_starter.start_file_writer(
             morsel_rx,
             FileOpenTaskHandle::new(file_open_task, self.sync_on_close),
             self.num_pipelines_per_sink,
+            file_stats_tx,
         )?;
 
+        let sinked_file_info_list = self.file_provider.sinked_file_info_list.clone();
         let task_handle = async_executor::spawn(TaskPriority::High, async move {
-            let file_stats = writer_handle.await?;
+            writer_handle.await?;
 
             if let Some(sinked_file_info_list) = sinked_file_info_list {
-                if let Ok(Some(path)) = path_rx.await {
-                    sinked_file_info_list
-                        .file_info_list
-                        .lock()
-                        .push(SinkedFileInfo {
-                            path,
-                            stats: file_stats,
-                        });
-                }
+                let path = path_rx.unwrap().try_recv().unwrap();
+                let stats = file_stats_rx.and_then(|mut rx| rx.try_recv().ok());
+                sinked_file_info_list
+                    .file_info_list
+                    .lock()
+                    .push(SinkedFileInfo { path, stats });
             }
 
             Ok(file_permit)
@@ -75,5 +70,16 @@ impl PartitionSinkStarter {
             start_position,
             task_handle,
         })
+    }
+}
+
+fn opt_connector<T>(
+    condition: bool,
+) -> (Option<connector::Sender<T>>, Option<connector::Receiver<T>>) {
+    if condition {
+        let (tx, rx) = connector::connector();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
     }
 }

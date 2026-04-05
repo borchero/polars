@@ -81,7 +81,8 @@ impl FileWriterStarter for ParquetWriterStarter {
         morsel_rx: connector::Receiver<SinkMorsel>,
         file: FileOpenTaskHandle,
         num_pipelines: std::num::NonZeroUsize,
-    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<Option<SinkedFileStats>>>> {
+        file_stats_tx: Option<connector::Sender<SinkedFileStats>>,
+    ) -> PolarsResult<async_executor::JoinHandle<PolarsResult<()>>> {
         let InitializedState {
             encodings,
             schema_descriptor,
@@ -128,7 +129,7 @@ impl FileWriterStarter for ParquetWriterStarter {
                     key_value_metadata,
                     num_leaf_columns,
                 }
-                .run(),
+                .run(file_stats_tx.is_some()),
             ),
         );
 
@@ -149,8 +150,12 @@ impl FileWriterStarter for ParquetWriterStarter {
 
         Ok(async_executor::spawn(TaskPriority::Low, async move {
             compute_handle.await?;
-            let file_stats = io_handle.await.unwrap()?;
-            Ok(Some(file_stats))
+            if let Some(file_stats) = io_handle.await.unwrap()?
+                && let Some(mut tx) = file_stats_tx
+            {
+                tx.send(file_stats).await.unwrap();
+            }
+            Ok(())
         }))
     }
 }
